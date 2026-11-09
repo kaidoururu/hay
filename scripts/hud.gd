@@ -13,6 +13,7 @@ extends CanvasLayer
 @export var противоядия_label: Label
 
 var game_state: Dictionary
+var game_config: Dictionary # Добавляем объявление
 
 func _ready():
     # Инициализация интерфейса
@@ -20,7 +21,7 @@ func _ready():
     stamina_bar.max_value = 100
     update_ui()
     
-    # Подключение сигналов
+    # Правильное подключение сигналов
     btn_sell.connect("pressed", self, "_on_sell_clicked")
     btn_shop.connect("pressed", self, "_on_shop_clicked")
 
