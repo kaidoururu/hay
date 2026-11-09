@@ -1,16 +1,14 @@
 name: Build Godot APK
-
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -19,56 +17,56 @@ jobs:
           java-version: "17"
 
       - name: Set up Android SDK
-        run: |
-          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+        uses: android-actions/setup-android@v3
 
-      - name: Download Godot 4.2.2
+      - name: Install SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      - name: Download Godot 4.2.2 and export templates
         run: |
           wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip
           unzip -o Godot_v4.2.2-stable_linux.x86_64.zip
           chmod +x Godot_v4.2.2-stable_linux.x86_64
-
-      - name: Download export templates
-        run: |
           wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz
-          unzip -o Godot_v4.2.2-stable_export_templates.tpz
           mkdir -p ~/.local/share/godot/export_templates
-          mv templates ~/.local/share/godot/export_templates/4.2.2.stable
+          cd ~/.local/share/godot/export_templates
+          unzip -o "$GITHUB_WORKSPACE/Godot_v4.2.2-stable_export_templates.tpz"
+          mv templates 4.2.2.stable
 
       - name: Generate debug keystore
         run: |
-          keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey \
-            -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          keytool -genkey -v -keystore "$GITHUB_WORKSPACE/debug.keystore" -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-      - name: Configure Godot editor settings
+      - name: Write keystore into export preset
         run: |
-          mkdir -p ~/.local/share/godot
-          cat > ~/.local/share/godot/editor_settings-4.tres << EOF
-          config_version=5
+          sed -i "s|^keystore/debug=.*|keystore/debug=\"$GITHUB_WORKSPACE/debug.keystore\"|" export_presets.cfg
+          sed -i "s|^keystore/debug_user=.*|keystore/debug_user=\"androiddebugkey\"|" export_presets.cfg
+          sed -i "s|^keystore/debug_password=.*|keystore/debug_password=\"android\"|" export_presets.cfg
+          cat export_presets.cfg
 
-          [export]
+      - name: Write editor settings (SDK and JDK paths)
+        run: |
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.tres <<EOF
+          [gd_resource type="EditorSettings" load_steps=1 format=3]
 
-          android/android_sdk_path="${ANDROID_HOME}"
-          android/java_sdk_path="${JAVA_HOME}"
-          android/debug_keystore="${GITHUB_WORKSPACE}/debug.keystore"
-          android/debug_keystore_user="androiddebugkey"
-          android/debug_keystore_pass="android"
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$GITHUB_WORKSPACE/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_password = "android"
           EOF
-          echo "--- editor_settings-4.tres ---"
-          cat ~/.local/share/godot/editor_settings-4.tres
 
       - name: Import project
-        run: ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import || true
+        run: ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import
 
       - name: Export APK
-        run: |
-          mkdir -p build
-          ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --export-debug "Android" build/hay.apk
+        run: mkdir -p build && ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --export-debug "Android" build/hay.apk
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: hay-apk
