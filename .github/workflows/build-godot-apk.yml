@@ -1,107 +1,107 @@
-name: Build Godot APK
+name: Build Godot Android APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build-android:
-    name: Export Android Debug APK
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK components
+      - name: Accept licenses and install SDK packages
         run: |
-          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} --licenses > /dev/null 2>&1 || true
-          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --sdk_root=${ANDROID_HOME} "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
-
-      - name: Download Godot 4.2.2 and export templates
-        run: |
-          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip
-          unzip -o Godot_v4.2.2-stable_linux.x86_64.zip
-          chmod +x Godot_v4.2.2-stable_linux.x86_64
-          mkdir -p ~/.local/share/godot/export_templates
-          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz
-          unzip -o Godot_v4.2.2-stable_export_templates.tpz -d /tmp/templates
-          mv /tmp/templates/templates ~/.local/share/godot/export_templates/4.2.2.stable
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
       - name: Generate debug keystore
         run: |
-          keytool -keyalg RSA -genkeypair -alias androiddebugkey \
-            -keypass android -keystore debug.keystore -storepass android \
-            -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -noprompt
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
+            -keystore $GITHUB_WORKSPACE/debug.keystore -storepass android \
+            -dname "CN=Android Debug,O=Android,C=US" -validity 9999
 
-      - name: Patch project.godot (enable ETC2/ASTC, fixes blank config error)
+      - name: Download Godot 4.2.2 and export templates
         run: |
-          python3 - <<'PYEOF'
-          import os, re, pathlib
-          p = pathlib.Path("project.godot")
-          text = p.read_text(encoding="utf-8")
-          key = "textures/vram_compression/import_etc2_astc"
-          pat = re.compile(r'^\s*' + re.escape(key) + r'\s*=.*$', re.M)
-          if pat.search(text):
-              text = pat.sub(key + "=true", text)
-          elif "[rendering]" in text:
-              text = text.replace("[rendering]", "[rendering]\n" + key + "=true", 1)
-          else:
-              text = text.rstrip("\n") + "\n\n[rendering]\n" + key + "=true\n"
-          p.write_text(text, encoding="utf-8")
-          print("=== project.godot after patch ===")
-          for line in text.splitlines():
-              if "vram_compression" in line:
-                  print(line)
-          PYEOF
+          curl -L -o godot.zip "https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip"
+          unzip -o godot.zip
+          chmod +x Godot_v4.2.2-stable_linux.x86_64
+          mkdir -p ~/.local/share/godot/export_templates
+          curl -L -o templates.tpz "https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz"
+          cd ~/.local/share/godot/export_templates
+          unzip -o "$GITHUB_WORKSPACE/templates.tpz"
+          mv templates/* .
+          rmdir templates
+          ls ~/.local/share/godot/export_templates/4.2.2.stable | head -n 20
 
-      - name: Write editor settings (SDK, JDK, keystore)
+      - name: Patch project.godot (ETC2/ASTC + mobile renderer)
         run: |
-          mkdir -p ~/.config/godot
-          cat > ~/.config/godot/editor_settings-4.tres <<EOF
-          [gd_resource type="EditorSettings" format=3]
-
-          [resource]
-          export/android/android_sdk_path = "${ANDROID_HOME}"
-          export/android/java_sdk_path = "${JAVA_HOME}"
-          export/android/debug_keystore = "${GITHUB_WORKSPACE}/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
+          python3 - <<'EOF'
+          import re
+          def ensure_setting(text, section, key, value):
+              m = re.search(r'(?m)^\[' + re.escape(section) + r'\]\s*$', text)
+              if not m:
+                  return text + (('\n' if text and not text.endswith('\n') else '') + '[' + section + ']\n' + key + '=' + value + '\n')
+              sec_start = m.end()
+              nxt = re.search(r'(?m)^\[', text[sec_start:])
+              sec_end = sec_start + (nxt.start() if nxt else len(text[sec_start:]))
+              section_text = text[sec_start:sec_end]
+              kv = re.search(r'(?m)^\s*' + re.escape(key) + r'\s*=.*$', section_text)
+              if kv:
+                  new_sec = section_text[:kv.start()] + key + '=' + value + '\n' + section_text[kv.end():]
+              else:
+                  new_sec = section_text + key + '=' + value + '\n'
+              return text[:sec_start] + new_sec + text[sec_end:]
+          with open('project.godot', 'r', encoding='utf-8') as f:
+              text = f.read()
+          text = ensure_setting(text, 'rendering', 'textures/vram_compression/import_etc2_astc', 'true')
+          text = ensure_setting(text, 'rendering', 'renderer/rendering_method.mobile', '"gl_compatibility"')
+          with open('project.godot', 'w', encoding='utf-8') as f:
+              f.write(text)
+          print("--- patched project.godot ---")
+          print(text)
           EOF
 
-      - name: Patch export_presets.cfg (keystore paths)
+      - name: Patch export_presets.cfg with keystore
         run: |
-          python3 - <<'PYEOF'
-          import os, re, pathlib
-          p = pathlib.Path("export_presets.cfg")
-          if not p.exists():
-              print("export_presets.cfg not found!")
-              exit(1)
-          text = p.read_text(encoding="utf-8")
-          ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
-          subs = {
-              "keystore/debug": '"' + ws + '/debug.keystore"',
-              "keystore/debug_user": '"androiddebugkey"',
-              "keystore/debug_password": '"android"',
-          }
-          for key, val in subs.items():
-              pat = re.compile(r'^(\s*' + re.escape(key) + r'\s*=\s*).*$')
+          python3 - <<'EOF'
+          import re, os
+          ks = os.path.join(os.environ.get('GITHUB_WORKSPACE', os.getcwd()), 'debug.keystore')
+          with open('export_presets.cfg', 'r', encoding='utf-8') as f:
+              text = f.read()
+          for key, val in [('keystore/debug', ks), ('keystore/debug_user', 'androiddebugkey'), ('keystore/debug_password', 'android')]:
+              pat = re.compile(r'(?m)^' + re.escape(key) + r'="?"?$')
               if pat.search(text):
-                  text = pat.sub(lambda m: m.group(1) + val, text)
+                  text = pat.sub(key + '="' + val + '"', text, count=1)
               else:
-                  text = text.rstrip("\n") + "\n" + key + "=" + val + "\n"
-          p.write_text(text, encoding="utf-8")
-          print("=== export_presets.cfg (keystore lines) ===")
-          for line in text.splitlines():
-              if "keystore" in line:
-                  print(line)
-          PYEOF
+                  text += '\n' + key + '="' + val + '"\n'
+          with open('export_presets.cfg', 'w', encoding='utf-8') as f:
+              f.write(text)
+          print("--- patched export_presets.cfg ---")
+          print(text)
+          EOF
+
+      - name: Write editor settings
+        run: |
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.tres <<'EOF'
+          [editor_settings]
+          filesystem/import/blender/enabled=false
+          export/android/android_sdk_path="/usr/local/lib/android/sdk"
+          export/android/debug_keystore="/home/runner/work/hay/hay/debug.keystore"
+          export/android/debug_keystore_user="androiddebugkey"
+          export/android/debug_keystore_pass="android"
+          export/android/java_sdk_path="${JAVA_HOME}"
+          EOF
+          echo "Editor settings written."
 
       - name: Import project
         run: ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import
@@ -109,15 +109,36 @@ jobs:
       - name: Export APK
         run: |
           mkdir -p build
-          set +e
-          ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --export-debug "Android" build/hay.apk
-          code=$?
-          set -e
-          if [ $code -ne 0 ]; then
+          ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --export-debug "Android" build/hay.apk || {
             echo "=== RETRY WITH VERBOSE FOR DIAGNOSTICS ==="
             ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --verbose --export-debug "Android" build/hay.apk
-          fi
-          ls -la build/
+          }
+
+      - name: Verify APK contents (native libraries)
+        run: |
+          python3 - <<'EOF'
+          import zipfile, sys
+          apks = ['build/hay.apk'] + __import__('glob').glob('build/*.apk')
+          path = next((p for p in apks if __import__('os').path.exists(p)), None)
+          if not path:
+              print("FATAL: no APK found in build/")
+              sys.exit(1)
+          print("APK:", path)
+          z = zipfile.ZipFile(path)
+          names = z.namelist()
+          libs = [n for n in names if n.startswith('lib/') and n.endswith('.so')]
+          print("Native libraries in APK:")
+          for n in libs:
+              print("  ", n)
+          has_arm64 = any('arm64-v8a/libgodot_android.so' in n for n in libs)
+          has_armv7 = any('armeabi-v7a/libgodot_android.so' in n for n in libs)
+          if not has_arm64 and not has_armv7:
+              print("FATAL: libgodot_android.so missing from APK! Export produced an APK without engine libraries.")
+              sys.exit(1)
+          print("OK: native engine library present.")
+          pck = [n for n in names if n.endswith('.pck')]
+          print("PCK files:", pck if pck else "NONE FOUND (warning!)")
+          EOF
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
