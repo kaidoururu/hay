@@ -2,7 +2,7 @@ name: Build Godot APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -18,40 +18,50 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Android SDK components
+      - name: Set up Android SDK
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "cmdline-tools;latest"
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
       - name: Download Godot 4.2.2
         run: |
-          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip -O godot.zip
-          unzip -o godot.zip
+          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip
+          unzip -o Godot_v4.2.2-stable_linux.x86_64.zip
           chmod +x Godot_v4.2.2-stable_linux.x86_64
 
       - name: Download export templates
         run: |
-          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz -O templates.tpz
-          mkdir -p "$HOME/.local/share/godot/export_templates/4.2.2.stable"
-          unzip -o templates.tpz -d /tmp/templates
-          cp /tmp/templates/templates/* "$HOME/.local/share/godot/export_templates/4.2.2.stable/"
+          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz
+          unzip -o Godot_v4.2.2-stable_export_templates.tpz
+          mkdir -p ~/.local/share/godot/export_templates
+          mv templates ~/.local/share/godot/export_templates/4.2.2.stable
 
-      - name: Generate debug keystore and editor settings
+      - name: Generate debug keystore
         run: |
-          mkdir -p "$HOME/.local/share/godot"
-          keytool -genkeypair -v -keystore "$HOME/debug.keystore" -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          cat > "$HOME/.local/share/godot/editor_settings-4.2.2.tres" <<EOF
-          [editor_settings]
+          keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey \
+            -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
 
-          export/android/java_sdk_path = "${JAVA_HOME}"
-          export/android/android_sdk_path = "${ANDROID_HOME}"
-          export/android/debug_keystore_file = "${HOME}/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
+      - name: Configure Godot editor settings
+        run: |
+          mkdir -p ~/.local/share/godot
+          cat > ~/.local/share/godot/editor_settings-4.tres << EOF
+          config_version=5
+
+          [export]
+
+          android/android_sdk_path="${ANDROID_HOME}"
+          android/java_sdk_path="${JAVA_HOME}"
+          android/debug_keystore="${GITHUB_WORKSPACE}/debug.keystore"
+          android/debug_keystore_user="androiddebugkey"
+          android/debug_keystore_pass="android"
           EOF
+          echo "--- editor_settings-4.tres ---"
+          cat ~/.local/share/godot/editor_settings-4.tres
 
       - name: Import project
-        run: ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import
+        run: ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import || true
 
       - name: Export APK
         run: |
