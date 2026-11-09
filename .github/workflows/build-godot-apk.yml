@@ -21,8 +21,12 @@ jobs:
 
       - name: Принять лицензии Android SDK
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          sdkmanager --list_installed
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            SDKM="$(ls -d $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager | head -n1)"
+          fi
+          echo "Использую sdkmanager: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
 
       - name: Создать debug-keystore
         run: |
