@@ -1,28 +1,41 @@
-name: Build Godot APK
+name: Build Android APK
+
 on:
   push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
+      - name: Prepare Android SDK
         run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          set -x
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKM=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n 1)
+          if [ -z "$SDKM" ]; then
+            echo "sdkmanager not found, installing cmdline-tools"
+            curl -fsSL -o /tmp/clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            mkdir -p "$ANDROID_HOME/cmdline-tools"
+            unzip -q /tmp/clt.zip -d "$ANDROID_HOME/cmdline-tools"
+            mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+            SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platform-tools" > /dev/null 2>&1 || true
+          "$SDKM" "platforms;android-34" > /dev/null 2>&1 || true
+          "$SDKM" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          ls "$ANDROID_HOME"
+          ls "$ANDROID_HOME"/build-tools || true
 
       - name: Download Godot 4.2.2 and export templates
         run: |
@@ -30,44 +43,118 @@ jobs:
           unzip -o Godot_v4.2.2-stable_linux.x86_64.zip
           chmod +x Godot_v4.2.2-stable_linux.x86_64
           wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz
-          mkdir -p ~/.local/share/godot/export_templates
-          cd ~/.local/share/godot/export_templates
-          unzip -o "$GITHUB_WORKSPACE/Godot_v4.2.2-stable_export_templates.tpz"
-          mv templates 4.2.2.stable
+          mkdir -p /tmp/tpl
+          unzip -q -o Godot_v4.2.2-stable_export_templates.tpz -d /tmp/tpl
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.2.2.stable"
+          cp -r /tmp/tpl/templates/* "$HOME/.local/share/godot/export_templates/4.2.2.stable/"
+          ls "$HOME/.local/share/godot/export_templates/4.2.2.stable"
+          echo "GODOT_BIN=$(pwd)/Godot_v4.2.2-stable_linux.x86_64" >> "$GITHUB_ENV"
 
       - name: Generate debug keystore
         run: |
-          keytool -genkey -v -keystore "$GITHUB_WORKSPACE/debug.keystore" -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p "$HOME/.android"
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
+            -keystore "$HOME/.android/debug.keystore" -storepass android \
+            -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+          echo "KEYSTORE_PATH=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
 
-      - name: Write keystore into export preset
+      - name: Configure presets and editor settings
         run: |
-          sed -i "s|^keystore/debug=.*|keystore/debug=\"$GITHUB_WORKSPACE/debug.keystore\"|" export_presets.cfg
-          sed -i "s|^keystore/debug_user=.*|keystore/debug_user=\"androiddebugkey\"|" export_presets.cfg
-          sed -i "s|^keystore/debug_password=.*|keystore/debug_password=\"android\"|" export_presets.cfg
-          cat export_presets.cfg
+          python3 - <<'PY'
+          import os, re
 
-      - name: Write editor settings (SDK and JDK paths)
-        run: |
-          mkdir -p ~/.config/godot
-          cat > ~/.config/godot/editor_settings-4.tres <<EOF
-          [gd_resource type="EditorSettings" load_steps=1 format=3]
+          path = "export_presets.cfg"
+          ks = os.environ.get("KEYSTORE_PATH", os.path.expanduser("~/.android/debug.keystore"))
+          user, pw = "androiddebugkey", "android"
 
-          [resource]
-          export/android/android_sdk_path = "$ANDROID_HOME"
-          export/android/java_sdk_path = "$JAVA_HOME"
-          export/android/debug_keystore = "$GITHUB_WORKSPACE/debug.keystore"
+          pairs = {
+              "keystore/debug": ks,
+              "keystore/debug_user": user,
+              "keystore/debug_password": pw,
+              "keystore/release": ks,
+              "keystore/release_user": user,
+              "keystore/release_password": pw,
+          }
+
+          if not os.path.exists(path):
+              data = (
+                  'config_version=5\n\n'
+                  '[preset.0]\n\n'
+                  'name="Android"\n'
+                  'platform="Android"\n'
+                  'runnable=true\n'
+                  'export_filter="all_resources"\n'
+                  'include_filter=""\n'
+                  'exclude_filter=""\n'
+                  'export_path="build/hay.apk"\n\n'
+                  '[preset.0.options]\n\n'
+                  'custom_template/debug=""\n'
+                  'custom_template/release=""\n'
+                  'gradle_build/use_gradle_build=false\n'
+                  'architectures/armeabi-v7a=true\n'
+                  'architectures/arm64-v8a=true\n'
+                  'version/code=1\n'
+                  'version/name="1.0"\n'
+                  'package/unique_name="com.example.hay"\n'
+                  'package/name="Hay"\n'
+              )
+              print("export_presets.cfg not found, created a default one")
+          else:
+              data = open(path, encoding="utf-8", errors="replace").read()
+
+          for k, v in pairs.items():
+              pat = re.compile(r'([ \t]*' + re.escape(k) + r'[ \t]*=)[ \t]*("[^"]*"|[^;\n]*)')
+              if pat.search(data):
+                  data = pat.sub(lambda m, val=v: m.group(1) + '"' + val + '"', data, count=1)
+              else:
+                  m = re.search(r'\[preset\.0\.options\]\n', data) or re.search(r'\[preset\.0\]\n', data)
+                  if m:
+                      data = data[:m.end()] + k + '="' + v + '"\n' + data[m.end():]
+
+          pat_un = re.compile(r'([ \t]*package/unique_name[ \t]*=)[ \t]*("[^"]*"|[^;\n]*)')
+          if pat_un.search(data):
+              empty = re.search(r'[ \t]*package/unique_name[ \t]*=[ \t]*""', data)
+              if empty:
+                  data = data.replace('package/unique_name=""', 'package/unique_name="com.example.hay"', 1)
+          else:
+              m = re.search(r'\[preset\.0\.options\]\n', data) or re.search(r'\[preset\.0\]\n', data)
+              if m:
+                  data = data[:m.end()] + 'package/unique_name="com.example.hay"\n' + data[m.end():]
+
+          open(path, "w", encoding="utf-8").write(data)
+          print("=== export_presets.cfg after patch (first 40 lines) ===")
+          print("\n".join(data.splitlines()[:40]))
+          PY
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          config_version=5
+
+          [editor]
+
+          export/android/android_sdk_path = "${ANDROID_HOME}"
+          export/android/java_sdk_path = "${JAVA_HOME}"
+          export/android/debug_keystore = "${KEYSTORE_PATH}"
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_password = "android"
+          export/android/adb = "${ANDROID_HOME}/platform-tools/adb"
           EOF
+          echo "=== editor_settings-4.tres ==="
+          cat "$HOME/.config/godot/editor_settings-4.tres"
 
       - name: Import project
-        run: ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import
+        run: |
+          "$GODOT_BIN" --headless --path . --import || "$GODOT_BIN" --headless --path . --editor --quit || true
 
       - name: Export APK
-        run: mkdir -p build && ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --export-debug "Android" build/hay.apk
+        run: |
+          mkdir -p build
+          "$GODOT_BIN" --headless --path . --export-debug "Android" build/hay.apk \
+            || (echo "=== RETRY WITH VERBOSE FOR DIAGNOSTICS ===" \
+                && "$GODOT_BIN" --headless --verbose --path . --export-debug "Android" build/hay.apk)
+          ls -la build
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: hay-apk
-          path: build/hay.apk
+          path: build/*.apk
