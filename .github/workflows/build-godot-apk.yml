@@ -1,15 +1,15 @@
-name: Build Android APK
+name: Build Godot Android APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -20,160 +20,125 @@ jobs:
 
       - name: Install Android SDK components
         run: |
+          set -e
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
-          echo "Android SDK OK: ${ANDROID_HOME}"
 
-      - name: Download Godot 4.2.2 and export templates
+      - name: Download Godot 4.2.2
         run: |
-          wget https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip
-          wget https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz
-          unzip -o Godot_v4.2.2-stable_linux.x86_64.zip
+          set -e
+          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip
+          unzip -q Godot_v4.2.2-stable_linux.x86_64.zip
           chmod +x Godot_v4.2.2-stable_linux.x86_64
-          test -x ./Godot_v4.2.2-stable_linux.x86_64 || { echo "::error::Godot binary missing"; exit 1; }
 
-      - name: Install export templates (with verification)
+      - name: Download export templates
         run: |
+          set -e
+          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_export_templates.tpz
           unzip -o Godot_v4.2.2-stable_export_templates.tpz -d /tmp/godot_templates
-          mkdir -p "$HOME/.local/share/godot/export_templates"
-          rm -rf "$HOME/.local/share/godot/export_templates/4.2.2.stable"
-          mv /tmp/godot_templates/templates/4.2.2.stable "$HOME/.local/share/godot/export_templates/"
-          echo "--- installed templates ---"
-          ls -la "$HOME/.local/share/godot/export_templates/4.2.2.stable"
-          for f in android_debug.apk android_release.apk; do
-            test -f "$HOME/.local/share/godot/export_templates/4.2.2.stable/$f" || {
-              echo "::error::Template $f not found at expected path"
-              find /tmp/godot_templates -maxdepth 3
-              exit 1
-            }
-          done
-          echo "Export templates OK"
 
-      - name: Patch project.godot (etc2_astc + gl_compatibility)
+      - name: Install export templates
         run: |
-          python3 << 'EOF'
+          set -e
+          # Внутри .tpz файлы лежат ПЛОСКО в templates/ (без папки версии).
+          # Версию берём из version.txt и сами создаём папку с этим именем.
+          VERSION=$(cat /tmp/godot_templates/templates/version.txt | tr -d '[:space:]')
+          echo "Template version from version.txt: $VERSION"
+          mkdir -p "$HOME/.local/share/godot/export_templates/$VERSION"
+          mv /tmp/godot_templates/templates/* "$HOME/.local/share/godot/export_templates/$VERSION/"
+          # ЖЁСТКАЯ ПРОВЕРКА: если шаблон не на месте — падаем с понятным сообщением
+          if [ ! -f "$HOME/.local/share/godot/export_templates/$VERSION/android_debug.apk" ]; then
+            echo "::error::android_debug.apk not found in $HOME/.local/share/godot/export_templates/$VERSION"
+            find "$HOME/.local/share/godot" -maxdepth 4 -print
+            exit 1
+          fi
+          echo "Templates OK:"
+          ls -la "$HOME/.local/share/godot/export_templates/$VERSION/"
+
+      - name: Generate debug keystore
+        run: |
+          set -e
+          keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/debug.keystore" \
+            -storepass android -keypass android -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Patch export_presets.cfg (keystore paths)
+        run: |
+          set -e
+          python3 - <<'EOF'
           import re, os
-
-          def set_key(text, section, key, value):
-              lines = text.splitlines()
-              sec_idx = None
-              for i, ln in enumerate(lines):
-                  if ln.strip() == "[" + section + "]":
-                      sec_idx = i
-                      break
-              if sec_idx is None:
-                  if lines and lines[-1].strip():
-                      lines.append("")
-                  lines.append("[" + section + "]")
-                  sec_idx = len(lines) - 1
-              end = len(lines)
-              for i in range(sec_idx + 1, len(lines)):
-                  if lines[i].strip().startswith("["):
-                      end = i
-                      break
-              pat = re.compile(r"^\s*" + re.escape(key) + r"\s*=")
-              for i in range(sec_idx + 1, end):
-                  if pat.match(lines[i]):
-                      lines[i] = key + "=" + value
-                      return "\n".join(lines) + "\n"
-              lines.insert(end, key + "=" + value)
-              return "\n".join(lines) + "\n"
-
-          path = "project.godot"
-          text = open(path, encoding="utf-8").read()
-          text = set_key(text, "rendering", "textures/vram_compression/import_etc2_astc", "true")
-          text = set_key(text, "rendering", "renderer/rendering_method.mobile", '"gl_compatibility"')
-          open(path, "w", encoding="utf-8").write(text)
-          print("--- project.godot after patch ---")
-          print(text)
+          p = 'export_presets.cfg'
+          ks = os.path.abspath('debug.keystore')
+          src = open(p).read()
+          def setopt(text, key, value):
+              pat = re.compile(r'^(\s*' + re.escape(key) + r'\s*=).*$')
+              if pat.search(text):
+                  return pat.sub(r'\1 "%s"' % value, text, count=1)
+              # добавляем в секцию preset.0
+              return re.sub(r'(\[preset\.0\]\n)', r'\1%s = "%s"\n' % (key, value), text, count=1)
+          src = setopt(src, 'keystore/debug', ks)
+          src = setopt(src, 'keystore/debug_user', 'androiddebugkey')
+          src = setopt(src, 'keystore/debug_password', 'android')
+          open(p, 'w').write(src)
+          print(src)
           EOF
 
-      - name: Generate debug keystore and patch export_presets.cfg
+      - name: Patch project.godot (ETC2/ASTC + gl_compatibility)
         run: |
-          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
-            -keystore debug.keystore -storepass android \
-            -dname "CN=Android Debug,O=Android,C=US" -validity 9999
-          KS="$GITHUB_WORKSPACE/debug.keystore"
-          python3 - "$KS" << 'EOF'
-          import re, sys, os
-
-          ks_path = sys.argv[1]
-
-          def set_key(text, section, key, value):
-              lines = text.splitlines()
-              sec_idx = None
-              for i, ln in enumerate(lines):
-                  if ln.strip() == "[" + section + "]":
-                      sec_idx = i
-                      break
-              if sec_idx is None:
-                  if lines and lines[-1].strip():
-                      lines.append("")
-                  lines.append("[" + section + "]")
-                  sec_idx = len(lines) - 1
-              end = len(lines)
-              for i in range(sec_idx + 1, len(lines)):
-                  if lines[i].strip().startswith("["):
-                      end = i
-                      break
-              pat = re.compile(r"^\s*" + re.escape(key) + r"\s*=")
-              for i in range(sec_idx + 1, end):
-                  if pat.match(lines[i]):
-                      lines[i] = key + "=" + value
-                      return "\n".join(lines) + "\n"
-              lines.insert(end, key + "=" + value)
-              return "\n".join(lines) + "\n"
-
-          path = "export_presets.cfg"
-          text = open(path, encoding="utf-8").read()
-          text = set_key(text, "preset.0.options", "keystore/debug", '"' + ks_path + '"')
-          text = set_key(text, "preset.0.options", "keystore/debug_user", '"androiddebugkey"')
-          text = set_key(text, "preset.0.options", "keystore/debug_password", '"android"')
-          text = set_key(text, "preset.0.options", "architectures/arm64-v8a", "true")
-          text = set_key(text, "preset.0.options", "architectures/armeabi-v7a", "true")
-          open(path, "w", encoding="utf-8").write(text)
-          print("--- export_presets.cfg after patch ---")
-          print(text)
+          set -e
+          python3 - <<'EOF'
+          import re
+          p = 'project.godot'
+          src = open(p).read()
+          def ensure_section(text, section):
+              if re.search(r'^\[%s\]\s*$' % re.escape(section), text, re.M):
+                  return text
+              return text + ('\n[%s]\n' % section)
+          def ensure_setting(text, section, key, value):
+              text = ensure_section(text, section)
+              sec_pat = re.compile(r'^(\[%s\]\n)((?:[^\[].*\n)*)' % re.escape(section), re.M)
+              m = sec_pat.search(text)
+              body = m.group(2)
+              kpat = re.compile(r'^%s\s*=.*$' % re.escape(key), re.M)
+              if kpat.search(body):
+                  body = kpat.sub('%s=%s' % (key, value), body, count=1)
+              else:
+                  body = body + '%s=%s\n' % (key, value)
+              return text[:m.start(2)] + body + text[m.end(2):]
+          src = ensure_setting(src, 'rendering', 'textures/vram_compression/import_etc2_astc', 'true')
+          src = ensure_setting(src, 'rendering', 'renderer/rendering_method', 'gl_compatibility')
+          src = ensure_setting(src, 'rendering', 'renderer/rendering_method.mobile', 'gl_compatibility')
+          open(p, 'w').write(src)
+          print(src)
           EOF
 
       - name: Import project
-        run: |
-          ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import || true
+        run: ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --import
 
       - name: Export APK
         run: |
           mkdir -p build
-          set +e
-          ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --export-debug "Android" build/hay.apk
-          CODE=$?
-          if [ $CODE -ne 0 ]; then
-            echo "::error::Export failed (exit $CODE), retrying with --verbose for diagnostics"
-            echo "=== export_presets.cfg ==="
-            cat export_presets.cfg
-            echo "=== project.godot ==="
-            cat project.godot
+          if ! ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --export-debug "Android" build/hay.apk; then
+            echo "=== RETRY WITH VERBOSE FOR DIAGNOSTICS ==="
             ./Godot_v4.2.2-stable_linux.x86_64 --headless --path . --verbose --export-debug "Android" build/hay.apk
-            CODE=$?
-            exit $CODE
           fi
-          test -f build/hay.apk || { echo "::error::APK was not produced"; exit 1; }
-          echo "Export OK: build/hay.apk"
 
       - name: Verify APK contents
         run: |
-          python3 << 'EOF'
-          import zipfile, sys
-
-          need = "lib/arm64-v8a/libgodot_android.so"
-          with zipfile.ZipFile("build/hay.apk") as z:
-              names = z.namelist()
-          libs = [n for n in names if n.endswith(".so")]
-          print("Native libraries in APK:", libs)
-          if need not in names:
-              print("::error::" + need + " NOT found in APK - engine native layer would fail on device")
-              sys.exit(1)
-          print("APK contents OK: native library present")
+          set -e
+          python3 - <<'EOF'
+          import zipfile
+          z = zipfile.ZipFile('build/hay.apk')
+          names = z.namelist()
+          libs = [n for n in names if n.startswith('lib/') and n.endswith('.so')]
+          print('Native libs in APK:', libs)
+          needed = ['lib/arm64-v8a/libgodot_android.so', 'lib/armeabi-v7a/libgodot_android.so']
+          missing = [n for n in needed if n not in names]
+          if missing:
+              raise SystemExit('MISSING native libs: %s' % missing)
+          print('APK contents OK')
           EOF
 
       - name: Upload APK artifact
