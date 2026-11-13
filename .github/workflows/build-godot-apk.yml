@@ -6,10 +6,11 @@ on:
   workflow_dispatch:
 
 env:
-  # Версия Godot должна совпадать с версией проекта (в project.godot указано 4.2)
   GODOT_VERSION: 4.2.2
   EXPORT_PRESET_NAME: "Android"
   EXPORT_NAME: "hay"
+  # Явно указываем путь к Java SDK (OpenJDK 17), который есть в образе
+  JAVA_HOME: "/usr/lib/jvm/java-17-openjdk-amd64"
 
 jobs:
   export-android:
@@ -17,8 +18,13 @@ jobs:
     runs-on: ubuntu-latest
 
     container:
-      # Используем конкретную версию, чтобы избежать ошибки с env в этом поле
       image: barichello/godot-ci:4.2.2
+      # Передаем переменные окружения внутрь контейнера
+      env:
+        # Указываем путь к встроенному debug-keystore в образе
+        GODOT_ANDROID_KEYSTORE_DEBUG_PATH: "/root/debug.keystore"
+        GODOT_ANDROID_KEYSTORE_DEBUG_USER: "androiddebugkey"
+        GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: "android"
 
     steps:
       - name: Checkout code
@@ -28,18 +34,32 @@ jobs:
 
       - name: Setup Godot environment
         run: |
+          # 1. Перемещаем шаблоны экспорта
           mkdir -v -p ~/.local/share/godot/export_templates/
-          mkdir -v -p ~/.config/godot
-          mv /root/.config/godot ~/.config/godot
           mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable \
              ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+
+          # 2. Создаем директорию для конфигов Godot
+          mkdir -v -p ~/.config/godot
+
+          # 3. Копируем или создаем файл editor_settings и прописываем путь к Java SDK
+          if [ -f /root/.config/godot/editor_settings-4.tres ]; then
+            cp /root/.config/godot/editor_settings-4.tres ~/.config/godot/editor_settings-4.tres
+          else
+            echo '[gd_resource type="EditorSettings" format=2]' > ~/.config/godot/editor_settings-4.tres
+            echo '[resource]' >> ~/.config/godot/editor_settings-4.tres
+          fi
+          # Добавляем путь к Java SDK, если его еще нет
+          if ! grep -q "export/android/java_sdk_path" ~/.config/godot/editor_settings-4.tres; then
+            echo 'export/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"' >> ~/.config/godot/editor_settings-4.tres
+          fi
 
       - name: Create build directory
         run: mkdir -v -p build/android
 
       - name: Export Android APK (Debug)
         run: |
-          # Используем --export-debug, чтобы не требовался release-keystore
+          # Используем --export-debug для автоматической подписи отладочным ключом
           godot --headless --verbose --export-debug "${{ env.EXPORT_PRESET_NAME }}" "build/android/${{ env.EXPORT_NAME }}.apk"
 
       - name: Upload APK Artifact
