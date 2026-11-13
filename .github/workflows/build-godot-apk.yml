@@ -19,7 +19,6 @@ jobs:
     container:
       image: barichello/godot-ci:4.2.2
       env:
-        # Встроенный отладочный ключ из контейнера — ничего создавать не нужно
         GODOT_ANDROID_KEYSTORE_DEBUG_PATH: "/root/debug.keystore"
         GODOT_ANDROID_KEYSTORE_DEBUG_USER: "androiddebugkey"
         GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: "android"
@@ -32,22 +31,27 @@ jobs:
 
       - name: Fix project.godot and export_presets.cfg
         run: |
-          # 1. Включаем ETC2/ASTC — без этого headless-экспорт падает с пустой ошибкой
+          # 1. Включаем ETC2/ASTC
           if ! grep -q "import_etc2_astc" project.godot; then
-            echo "Добавляем import_etc2_astc в project.godot..."
-            # Добавляем секцию [rendering], если её вдруг нет
             if ! grep -q "^\[rendering\]" project.godot; then
               echo -e "\n[rendering]" >> project.godot
             fi
             echo "textures/vram_compression/import_etc2_astc=true" >> project.godot
           fi
 
-          # 2. Добавляем пустые поля keystore/debug в export_presets.cfg,
-          #    чтобы Godot использовал встроенный debug-keystore из editor settings
+          # 2. Включаем рендерер Compatibility (OpenGL) для мобильных
+          if ! grep -q "rendering/renderer/rendering_method.mobile" project.godot; then
+            echo 'rendering/renderer/rendering_method.mobile="gl_compatibility"' >> project.godot
+          fi
+
+          # 3. Добавляем пустые поля keystore/debug (для использования встроенного ключа)
           if ! grep -q "keystore/debug=" export_presets.cfg; then
-            echo "Добавляем пустые поля keystore/debug в export_presets.cfg..."
-            # Вставляем после секции [preset.0.options]
             sed -i '/^\[preset.0.options\]/a keystore/debug=""\nkeystore/debug_user=""\nkeystore/debug_password=""' export_presets.cfg
+          fi
+
+          # 4. Принудительно включаем обе архитектуры (arm64-v8a и armeabi-v7a)
+          if ! grep -q "architectures/arm64-v8a" export_presets.cfg; then
+            sed -i '/^\[preset.0.options\]/a architectures/arm64-v8a=true\narchitectures/armeabi-v7a=true' export_presets.cfg
           fi
 
       - name: Setup Godot environment
@@ -63,7 +67,6 @@ jobs:
             echo '[gd_resource type="EditorSettings" format=2]' > ~/.config/godot/editor_settings-4.tres
             echo '[resource]' >> ~/.config/godot/editor_settings-4.tres
           fi
-          # Прописываем путь к Java SDK (JDK 17), если его ещё нет
           if ! grep -q "export/android/java_sdk_path" ~/.config/godot/editor_settings-4.tres; then
             echo 'export/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"' >> ~/.config/godot/editor_settings-4.tres
           fi
@@ -73,7 +76,6 @@ jobs:
 
       - name: Export Android APK (Debug)
         run: |
-          # --export-debug автоматически использует debug.keystore из editor settings
           godot --headless --verbose --export-debug "${{ env.EXPORT_PRESET_NAME }}" "build/android/${{ env.EXPORT_NAME }}.apk"
 
       - name: Upload APK Artifact
