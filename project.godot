@@ -25,3 +25,8 @@ import/blender/enabled=false
 textures/vram_compression/import_etc2_astc=true
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+
+[debug]
+
+file_logging/enable_file_logging=true
+file_logging/log_path="user://logs/godot.log"
