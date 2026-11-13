@@ -8,9 +8,7 @@ on:
 env:
   # Версия Godot должна совпадать с версией проекта (в project.godot указано 4.2)
   GODOT_VERSION: 4.2.2
-  # Имя пресета экспорта из export_presets.cfg (у вас preset.0 name="Android")
   EXPORT_PRESET_NAME: "Android"
-  # Имя итогового файла (без .apk)
   EXPORT_NAME: "hay"
 
 jobs:
@@ -19,7 +17,8 @@ jobs:
     runs-on: ubuntu-latest
 
     container:
-      image: barichello/godot-ci:${{ env.GODOT_VERSION }}
+      # Используем конкретную версию, чтобы избежать ошибки с env в этом поле
+      image: barichello/godot-ci:4.2.2
 
     steps:
       - name: Checkout code
@@ -29,10 +28,8 @@ jobs:
 
       - name: Setup Godot environment
         run: |
-          # Подготавливаем директории для шаблонов экспорта и конфигов
           mkdir -v -p ~/.local/share/godot/export_templates/
           mkdir -v -p ~/.config/godot
-          # Перемещаем шаблоны и конфиги из контейнера в домашнюю директорию
           mv /root/.config/godot ~/.config/godot
           mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable \
              ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
@@ -40,11 +37,10 @@ jobs:
       - name: Create build directory
         run: mkdir -v -p build/android
 
-      - name: Export Android APK
+      - name: Export Android APK (Debug)
         run: |
-          # Проект находится в корне репозитория, поэтому cd не нужен.
-          # Запускаем headless-экспорт в release-режиме.
-          godot --headless --verbose --export-release "${{ env.EXPORT_PRESET_NAME }}" "build/android/${{ env.EXPORT_NAME }}.apk"
+          # Используем --export-debug, чтобы не требовался release-keystore
+          godot --headless --verbose --export-debug "${{ env.EXPORT_PRESET_NAME }}" "build/android/${{ env.EXPORT_NAME }}.apk"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
