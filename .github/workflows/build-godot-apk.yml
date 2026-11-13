@@ -49,7 +49,7 @@ jobs:
             sed -i '/^\[preset.0.options\]/a keystore/debug=""\nkeystore/debug_user=""\nkeystore/debug_password=""' export_presets.cfg
           fi
 
-          # 4. Принудительно включаем обе архитектуры (arm64-v8a и armeabi-v7a)
+          # 4. Принудительно включаем обе архитектуры
           if ! grep -q "architectures/arm64-v8a" export_presets.cfg; then
             sed -i '/^\[preset.0.options\]/a architectures/arm64-v8a=true\narchitectures/armeabi-v7a=true' export_presets.cfg
           fi
